@@ -1,124 +1,39 @@
-name: Run Python scripts and commit outputs
+name: Run Python Script and Save Output
 
 on:
-  workflow_dispatch:
-    inputs:
-      script_path:
-        description: 'Path to the Python script to run (optional). If empty, workflow will try scripts/ or top-level .py files.'
-        required: false
-        default: ''
-      commit_scope:
-        description: 'What to commit back to the repo: "all" (all changes) or "outputs" (only outputs/).'
-        required: false
-        default: 'outputs'
   push:
     branches:
-      - main
-      - master
+      - main  # Runs when you push to the main branch
+  workflow_dispatch: # Allows you to run it manually from the Actions tab
 
 jobs:
-  run-and-commit:
+  build:
     runs-on: ubuntu-latest
+
+    permissions:
+      # Required to push changes back to the repository
+      contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
+          python-version: '3.x' # Specify your Python version
 
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-
-      - name: Save pre-run git status
-        run: git status --porcelain > /tmp/pre_run_status.txt || true
-
-      - name: Install dependencies if requirements.txt exists
+      - name: Install dependencies
         run: |
-          if [ -f requirements.txt ]; then
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt
-          else
-            echo "No requirements.txt found, skipping install."
-          fi
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Prepare outputs directory
-        run: mkdir -p outputs
+      - name: Run Python script
+        run: python images.py # Replace with your filename
 
-      - name: Find and run Python scripts
-        id: run_scripts
+      - name: Commit and push changes
         run: |
-          set -euo pipefail
-          TIMESTAMP=$(date -u +"%Y%m%dT%H%M%SZ")
-          SCRIPTPATH="${{ github.event.inputs.script_path }}"
-
-          run_one() {
-            script="$1"
-            base=$(basename "$script")
-            echo "Running $script"
-            python "$script" > "outputs/${base}_stdout_${TIMESTAMP}.txt" 2>&1 || true
-            echo "$script" >> "outputs/ran_scripts_${TIMESTAMP}.txt"
-          }
-
-          if [ -n "$SCRIPTPATH" ] && [ -f "$SCRIPTPATH" ]; then
-            run_one "$SCRIPTPATH"
-          else
-            if [ -d scripts ]; then
-              shopt -s nullglob
-              for f in scripts/*.py; do
-                run_one "$f"
-              done
-            fi
-
-            if [ ! -f "outputs/ran_scripts_${TIMESTAMP}.txt" ]; then
-              IFS=$'\n' read -d '' -r -a files < <(find . -maxdepth 2 -type f -name "*.py" -not -path "./.git/*" -print) || true
-              if [ ${#files[@]} -eq 0 ]; then
-                echo "No Python scripts found to run." > "outputs/no_scripts_found_${TIMESTAMP}.txt"
-              else
-                for f in "${files[@]}"; do
-                  run_one "$f"
-                done
-              fi
-            fi
-          fi
-
-          ls -la > "outputs/outputs_listing_${TIMESTAMP}.txt" || true
-          echo "TIMESTAMP=${TIMESTAMP}" > "outputs/run_meta_${TIMESTAMP}.txt"
-          echo "timestamp=${TIMESTAMP}" >> "$GITHUB_OUTPUT"
-
-      - name: Show post-run git status
-        run: |
-          git status --porcelain > /tmp/post_run_status.txt || true
-          echo "--- Changes (pre-run) ---"
-          cat /tmp/pre_run_status.txt || true
-          echo "--- Changes (post-run) ---"
-          cat /tmp/post_run_status.txt || true
-
-      - name: Commit and push generated outputs
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          SCOPE="${{ github.event.inputs.commit_scope }}"
-          if [ "$SCOPE" = "outputs" ]; then
-            git add outputs || true
-          else
-            git add -A || true
-          fi
-
-          if git diff --cached --quiet; then
-            echo "No changes to commit"
-          else
-            COMMIT_MSG="Run Python scripts: add generated outputs (timestamp $(date -u +"%Y-%m-%dT%H:%M:%SZ"))"
-            git commit -m "$COMMIT_MSG" || true
-            if [[ "$GITHUB_REF" == refs/heads/* ]]; then
-              BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-            else
-              BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
-            fi
-            echo "Pushing to branch: $BRANCH_NAME"
-            git push origin HEAD:"$BRANCH_NAME"
-          fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          # Only commit if there are changes to avoid errors
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated update: save script output" && git push)
